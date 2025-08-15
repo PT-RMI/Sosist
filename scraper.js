@@ -3,47 +3,81 @@ const puppeteer = require('puppeteer');
 async function checkComment(postUrl, username) {
   let browser;
   try {
-    browser = await puppeteer.launch();
+    // Meluncurkan browser. Argumen ditambahkan untuk kompatibilitas dengan lingkungan container.
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
     const page = await browser.newPage();
-    await page.goto(postUrl, { waitUntil: 'networkidle2' });
+    await page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
     let isFound = false;
     if (postUrl.includes('tiktok.com')) {
-      // TikTok scraping logic with scrolling
-      await page.waitForSelector('body'); // Wait for the body to be present
+      // --- Logika Scraping TikTok ---
 
-      // Scroll down to load comments
-      for (let i = 0; i < 5; i++) {
-        await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for comments to load
+      // Tunggu hingga body konten termuat
+      await page.waitForSelector('body', { timeout: 10000 });
+
+      // Gulir ke bawah untuk memuat komentar. TikTok memuat komentar saat menggulir.
+      // Kami menggulir beberapa kali untuk memastikan sejumlah besar komentar dimuat.
+      for (let i = 0; i < 7; i++) {
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
+        await new Promise(resolve => setTimeout(resolve, 1500)); // Beri waktu agar komentar dimuat
       }
 
-      // Now, try to find the comments
+      // Atribut 'data-e2e' digunakan oleh TikTok untuk pengujian internal, membuatnya lebih stabil daripada nama kelas.
+      // Kode asli menggunakan `$eval` yang hanya mengambil satu elemen; ini telah diperbaiki menjadi `$$eval` untuk mendapatkan semua elemen.
+      const usernameSelector = '[data-e2e="comment-username-link"]';
       try {
-        await page.waitForSelector('[data-e2e="comment-username"]', { timeout: 10000 });
-        const comments = await page.$eval('[data-e2e="comment-username"]', elements => elements.map(el => el.textContent.trim()));
-        isFound = comments.some(commentUsername => commentUsername === username);
+        await page.waitForSelector(usernameSelector, { timeout: 15000 });
+        const usernames = await page.$$eval(usernameSelector, elements =>
+          elements.map(el => el.textContent.trim())
+        );
+        isFound = usernames.some(commentUsername => commentUsername === username);
       } catch (e) {
-        // It's possible no comments were found with that username.
-        // Or the selector failed. In either case, we can say the user was not found.
+        console.error('Tidak dapat menemukan komentar di TikTok. Pemilih mungkin sudah usang atau tidak ada komentar.');
         isFound = false;
       }
 
     } else if (postUrl.includes('instagram.com')) {
-      // Instagram scraping logic
-      // Note: Instagram's comment section loads on scroll.
-      // This selector is a best guess and might need adjustment.
-      await page.waitForSelector('div[class*="Comments"] ul li div[class*="Comment"] a[href*="/"]', { timeout: 60000 });
-      const comments = await page.$$eval('div[class*="Comments"] ul li div[class*="Comment"] a[href*="/"]', elements => elements.map(el => el.textContent.trim()));
-      isFound = comments.some(commentUsername => commentUsername === username);
+      // --- Logika Scraping Instagram ---
+      // CATATAN: Struktur Instagram sering berubah. Pemilih ini adalah upaya terbaik dan mungkin memerlukan pembaruan.
+
+      // Tunggu hingga konten utama dimuat. Komentar seringkali berada di dalam tag <article>.
+      await page.waitForSelector('article', { timeout: 10000 });
+
+      // Gulir ke bawah untuk memuat komentar.
+      for (let i = 0; i < 7; i++) {
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+
+      // Instagram menggunakan nama kelas yang dikaburkan (misalnya, "x1i10hfl"), yang membuatnya tidak dapat diandalkan.
+      // Pendekatan yang lebih baik adalah menggunakan pemilih struktural.
+      // Pemilih ini mencari tautan (<a>), yang kemungkinan adalah nama pengguna, di dalam header komentar (H3).
+      const usernameSelector = 'h3 > a';
+      try {
+        await page.waitForSelector(usernameSelector, { timeout: 15000 });
+        const usernames = await page.$$eval(usernameSelector, elements =>
+          elements.map(el => el.textContent.trim())
+        );
+        isFound = usernames.some(commentUsername => commentUsername === username);
+      } catch (e) {
+        console.error('Tidak dapat menemukan komentar di Instagram. Pemilih mungkin sudah usang atau tidak ada komentar.');
+        isFound = false;
+      }
+
     } else {
-      throw new Error('Unsupported URL. Please provide a TikTok or Instagram Reels link.');
+      throw new Error('URL tidak didukung. Harap berikan tautan TikTok atau Instagram.');
     }
 
     return { postUrl, username, found: isFound };
   } catch (error) {
-    console.error('Error during scraping:', error);
-    throw new Error('Failed to scrape the comment section. The page structure might have changed.');
+    console.error('Error selama scraping:', error.message);
+    if (error.name === 'TimeoutError') {
+      throw new Error('Waktu scraping habis. Halaman mungkin gagal dimuat, atau struktur telah berubah sehingga elemen tidak terdeteksi.');
+    }
+    throw new Error(`Gagal melakukan scrape pada bagian komentar. Struktur halaman mungkin telah berubah atau postingan bersifat pribadi.`);
   } finally {
     if (browser) {
       await browser.close();
