@@ -26,7 +26,6 @@ async function checkComment(postUrl, username) {
       }
 
       // Atribut 'data-e2e' digunakan oleh TikTok untuk pengujian internal, membuatnya lebih stabil daripada nama kelas.
-      // Kode asli menggunakan `$eval` yang hanya mengambil satu elemen; ini telah diperbaiki menjadi `$$eval` untuk mendapatkan semua elemen.
       const usernameSelector = '[data-e2e="comment-username-link"]';
       try {
         await page.waitForSelector(usernameSelector, { timeout: 15000 });
@@ -40,30 +39,40 @@ async function checkComment(postUrl, username) {
       }
 
     } else if (postUrl.includes('instagram.com')) {
-      // --- Logika Scraping Instagram ---
-      // CATATAN: Struktur Instagram sering berubah. Pemilih ini adalah upaya terbaik dan mungkin memerlukan pembaruan.
+      // --- Logika Scraping Instagram (Strategi Baru) ---
+      // CATATAN: Struktur Instagram sangat tidak stabil. Strategi ini mencoba untuk lebih andal
+      // dengan tidak bergantung pada nama kelas yang berubah-ubah.
 
-      // Tunggu hingga konten utama dimuat. Komentar seringkali berada di dalam tag <article>.
-      await page.waitForSelector('article', { timeout: 10000 });
+      // Tunggu hingga tag <article> utama dimuat, yang berisi postingan.
+      await page.waitForSelector('article', { timeout: 15000 });
 
-      // Gulir ke bawah untuk memuat komentar.
+      // Gulir beberapa kali untuk memastikan komentar mulai dimuat.
       for (let i = 0; i < 7; i++) {
         await page.evaluate(() => window.scrollBy(0, window.innerHeight));
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
 
-      // Instagram menggunakan nama kelas yang dikaburkan (misalnya, "x1i10hfl"), yang membuatnya tidak dapat diandalkan.
-      // Pendekatan yang lebih baik adalah menggunakan pemilih struktural.
-      // Pemilih ini mencari tautan (<a>), yang kemungkinan adalah nama pengguna, di dalam header komentar (H3).
-      const usernameSelector = 'h3 > a';
+      // Strategi baru: Cari semua item daftar (li) di dalam daftar (ul) di dalam artikel.
+      // Untuk setiap item, ambil teks dari tautan pertama (a), karena ini biasanya adalah nama pengguna.
+      const commentListItemSelector = 'article ul li';
       try {
-        await page.waitForSelector(usernameSelector, { timeout: 15000 });
-        const usernames = await page.$$eval(usernameSelector, elements =>
-          elements.map(el => el.textContent.trim())
-        );
+        await page.waitForSelector(commentListItemSelector, { timeout: 15000 });
+
+        const usernames = await page.evaluate(() => {
+            const listItems = document.querySelectorAll('article ul li');
+            const names = [];
+            listItems.forEach(item => {
+                const link = item.querySelector('a');
+                if (link && link.textContent) {
+                    names.push(link.textContent.trim());
+                }
+            });
+            return names;
+        });
+
         isFound = usernames.some(commentUsername => commentUsername === username);
       } catch (e) {
-        console.error('Tidak dapat menemukan komentar di Instagram. Pemilih mungkin sudah usang atau tidak ada komentar.');
+        console.error('Gagal menemukan komentar di Instagram dengan strategi baru. Strukturnya mungkin telah berubah lagi.');
         isFound = false;
       }
 
